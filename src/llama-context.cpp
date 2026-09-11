@@ -271,6 +271,9 @@ llama_context::llama_context(
 
     cparams.op_offload = params.op_offload;
     cparams.kv_unified = params.kv_unified;
+    // KVA prefill (models carrying kva.* tensors): on by default, LLAMA_KVA=0 disables; kept out of
+    // llama_context_params so the library stays ABI-compatible with upstream builds
+    { const char * e = getenv("LLAMA_KVA"); cparams.kva_prefill = e ? atoi(e) != 0 : true; }
 
     // initialized later
     cparams.pipeline_parallel = false;

@@ -282,6 +282,14 @@ struct llama_hparams {
     // 0 = full rank (DeepSeek-V4)
     uint32_t hc_low_rank = 0;
 
+    // KVA: late-layer KV approximation projector for prefill (0 = absent)
+    uint32_t kva_split  = 0;
+    uint32_t kva_embd   = 0;
+    uint32_t kva_blocks = 0;
+    uint32_t kva_heads  = 0;
+    uint32_t kva_ffn    = 0;
+    float    kva_rope_base = 10000.0f;
+
     uint32_t ple_ngram_size      = 0;
     uint32_t ple_heads_per_ngram = 0;
     uint32_t ple_conv_kernel     = 0;

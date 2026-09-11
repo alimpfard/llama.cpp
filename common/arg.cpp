@@ -1726,6 +1726,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_KV_UNIFIED").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BATCHED, LLAMA_EXAMPLE_BENCH, LLAMA_EXAMPLE_PARALLEL}));
     add_opt(common_arg(
+        {"--kva"},
+        {"--no-kva"},
+        "skip the late decoder layers during prefill using the model's KVA projector (default: disabled)",
+        [](common_params & params, bool value) {
+            params.kva = value ? 1 : 0;
+        }
+    ).set_env("LLAMA_ARG_KVA"));
+    add_opt(common_arg(
         {"--cache-idle-slots"},
         {"--no-cache-idle-slots"},
         "save idle slots to the prompt cache on new task, and clear them when using unified KV (default: enabled, requires cache-ram)",

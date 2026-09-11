@@ -52,6 +52,7 @@ struct llama_cparams {
     bool warmup;             // TODO: remove [TAG_LLAMA_GRAPH_NO_WARMUP]
     bool op_offload;
     bool kv_unified;
+    bool kva_prefill; // approximate the late layers during prefill with the KVA projector (if the model has one)
     bool pipeline_parallel;
 
     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer

@@ -2234,6 +2234,27 @@ struct llama_model_qwen35 : public llama_model_base {
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
 
+    // KVA: late-layer KV approximation projector (optional companion tensors, see docs/kva.md)
+    struct kva_block {
+        ggml_tensor * attn_norm = nullptr;
+        ggml_tensor * attn_qkv  = nullptr;
+        ggml_tensor * attn_out  = nullptr;
+        ggml_tensor * ffn_norm  = nullptr;
+        ggml_tensor * ffn_up    = nullptr;
+        ggml_tensor * ffn_gate  = nullptr;
+        ggml_tensor * ffn_down  = nullptr;
+    };
+    struct kva_head {
+        ggml_tensor * w = nullptr;
+        ggml_tensor * b = nullptr;
+    };
+    ggml_tensor * kva_inp_norm = nullptr;
+    ggml_tensor * kva_inp      = nullptr;
+    ggml_tensor * kva_out_norm = nullptr;
+    std::vector<kva_block> kva_blocks;
+    std::vector<kva_head>  kva_heads; // indexed by layer, valid for il >= kva_split
+    bool has_kva() const { return kva_inp != nullptr && kva_out_norm != nullptr; }
+
     struct graph : public llm_build_delta_net_base {
         graph(const llama_model & model, const llm_graph_params & params);
     private:
@@ -2247,7 +2268,43 @@ struct llama_model_qwen35 : public llama_model_base {
         ggml_tensor * build_layer_attn_linear(
              llm_graph_input_rs * inp,
                     ggml_tensor * cur,
-                            int   il);
+                            int   il,
+                        int64_t   n_seq_tokens_override = -1);
+
+        // KVA prefill path
+        bool kva_active(const llama_model_qwen35 & qm) const;
+        ggml_tensor * build_kva(
+              const llama_model_qwen35 & qm,
+              llm_graph_input_mem_hybrid * inp,
+              llm_graph_input_attn_no_cache * inp_mask,
+                    ggml_tensor * h,
+                    ggml_tensor * inp_pos,
+                            int * sections);
+        struct kva_rs { ggml_tensor * state = nullptr; ggml_tensor * conv_prev = nullptr; };
+        kva_rs build_kva_linear(
+             llm_graph_input_rs * inp,
+                    ggml_tensor * o,
+                            int   il,
+                        int64_t   n_ap);
+        ggml_tensor * build_layer_attn_linear_tail(
+             llm_graph_input_rs * inp,
+                    ggml_tensor * cur,
+                            int   il,
+                   const kva_rs & rs);
+        void build_kva_attn(
+        llm_graph_input_attn_kv * inp,
+                    ggml_tensor * o,
+                    ggml_tensor * pos_ap,
+                            int * sections,
+                            int   il,
+                        int64_t   n_ap);
+        ggml_tensor * build_layer_attn_tail(
+        llm_graph_input_attn_kv * inp,
+                    ggml_tensor * cur,
+                    ggml_tensor * pos_tail,
+                            int * sections,
+                            int   il,
+                        int64_t   i_tail);
 
         ggml_tensor * build_layer_ffn(
                     ggml_tensor * cur,
@@ -2262,7 +2319,8 @@ struct llama_model_qwen35 : public llama_model_base {
         // returns pair of qkv, z
         std::pair<ggml_tensor *, ggml_tensor *> build_qkvz(
                     ggml_tensor * input,
-                            int   il);
+                            int   il,
+                        int64_t   n_seq_tokens);
 
         const llama_model & model;
     };
