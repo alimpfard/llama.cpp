@@ -825,7 +825,17 @@ ggml_tensor * llama_model_qwen35::graph::build_kva(
     // ---- the last token, exactly, on top of the approximated state
     ggml_tensor * cur = h_tail;
     for (int il = split; il < n_layer; ++il) {
-        res->t_layer_inp[il] = cur;
+        // late-layer inputs are exact for the tail token only; consumers of per-token layer inputs
+        // (e.g. a DFlash2 drafter) get the layer-`split` input as a stand-in for the approximated tokens
+        const bool want_inp = il < (int) cparams.embeddings_layer_inp.size() && cparams.embeddings_layer_inp[il];
+        if (want_inp) {
+            ggml_tensor * t = ggml_concat(ctx0, ggml_cont(ctx0, h_ap), cur, 1);       // [n_embd, n_tokens]
+            ggml_set_output(t);
+            ggml_build_forward_expand(gf, t);
+            res->t_layer_inp[il] = t;
+        } else {
+            res->t_layer_inp[il] = cur;
+        }
         ggml_tensor * inpSA = cur;
         ggml_tensor * hn = build_norm(cur, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
         ggml_tensor * a;
@@ -851,7 +861,6 @@ llama_model_qwen35::graph::kva_rs llama_model_qwen35::graph::build_kva_linear(
         ggml_tensor *        o,
         int                  il,
         int64_t              n_ap) {
-    GGML_ASSERT(cparams.n_rs_seq == 0 && "KVA does not support n_rs_seq > 0");
     const auto * mctx_cur = inp->mctx;
     const int64_t d_inner     = hparams.ssm_d_inner;
     const int64_t n_seqs      = 1;
@@ -880,7 +889,23 @@ llama_model_qwen35::graph::kva_rs llama_model_qwen35::graph::build_kva_linear(
     const int64_t conv_kernel_size = conv_kernel->ne[0];
     const int64_t conv_channels    = d_inner + 2 * hparams.ssm_n_group * hparams.ssm_d_state;
 
-    ggml_tensor * conv_input = build_conv_state(inp, conv_states_all, qkv_mixed, conv_kernel_size, conv_channels, il);
+    // conv state group 0 (after the last token) is written by the exact tail step; with recurrent-state
+    // rollback the groups j = 1..K-1 (state after token n_tokens-1-j = approximated token n_ap-j) come from here
+    ggml_tensor * conv_input = build_conv_state(inp, conv_states_all, qkv_mixed, conv_kernel_size, conv_channels, il, /*write_states=*/false);
+    if (cparams.n_rs_seq > 0) {
+        const auto    kv_head   = mctx_cur->get_head();
+        const auto    mem_size  = mctx_cur->get_size();
+        const int64_t row_count = (conv_kernel_size - 1) * conv_channels;
+        const size_t  row_size  = ggml_row_size(conv_states_all->type, row_count);
+        for (int64_t j = 1; j <= (int64_t) cparams.n_rs_seq && j <= n_ap; ++j) {
+            const int64_t s_idx = n_ap - j + 1;                                // rows [s_idx, s_idx + k - 2]
+            ggml_tensor * snap = ggml_view_3d(ctx0, conv_input, conv_kernel_size - 1, conv_channels, n_seqs,
+                    conv_input->nb[1], conv_input->nb[2], ggml_row_size(conv_input->type, s_idx));
+            ggml_tensor * dst = ggml_view_2d(ctx0, conv_states_all, row_count, n_seqs, conv_states_all->nb[1],
+                    ((size_t) j * mem_size + kv_head) * row_size);
+            ggml_build_forward_expand(gf, ggml_cpy(ctx0, snap, dst));
+        }
+    }
     ggml_tensor * state = build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs);
     state = ggml_reshape_4d(ctx0, state, head_v_dim, head_v_dim, num_v_heads, n_seqs);
 
@@ -899,10 +924,38 @@ llama_model_qwen35::graph::kva_rs llama_model_qwen35::graph::build_kva_linear(
 
     // run the scan; the state is handed to the exact tail step in-graph (re-reading the cache would
     // re-zero a sequence that starts in this ubatch), which then writes the final states
-    auto dn = build_delta_net(q_conv, k_conv, v_conv, gate, beta, state, il);
-    ggml_build_forward_expand(gf, dn.first);
     kva_rs r;
-    r.state = dn.second;                                                       // [S_v, S_v, H_v, n_seqs]
+    if (cparams.n_rs_seq == 0) {
+        auto dn = build_delta_net(q_conv, k_conv, v_conv, gate, beta, state, il);
+        ggml_build_forward_expand(gf, dn.first);
+        r.state = dn.second;                                                   // [S_v, S_v, H_v, n_seqs]
+    } else {
+        // recurrent-state rollback (speculative decoding): the cache keeps K = n_rs_seq + 1 snapshot groups,
+        // group i = state after token (n_tokens - 1 - i). The exact tail step writes group 0; the states
+        // after the last approximated tokens fill groups 1..K-1 (see build_recurrent_attn for the layout)
+        const int64_t K = cparams.n_rs_seq + 1;
+        ggml_tensor * gdn_out = ggml_gated_delta_net(ctx0, q_conv, k_conv, v_conv, gate, beta, state, K);
+        res->add_fused_node({LLM_FUSED_OP_GDN_CH, gdn_out, il});
+        ggml_build_forward_expand(gf, gdn_out);
+        const int64_t D               = head_v_dim * head_v_dim * num_v_heads;
+        const int64_t attn_score_elems = head_v_dim * num_v_heads * n_ap * n_seqs;
+        const int64_t snap_elems       = D * n_seqs;
+        const size_t  ts               = ggml_element_size(gdn_out);
+        r.state = ggml_view_4d(ctx0, gdn_out, head_v_dim, head_v_dim, num_v_heads, n_seqs,
+                head_v_dim * ts, head_v_dim * head_v_dim * ts, D * ts, attn_score_elems * ts);   // snapshot 0 = final state
+        const int64_t n_snap = std::min<int64_t>(n_ap, K - 1);                 // snapshots 0..n_snap-1 -> groups 1..n_snap
+        const auto   kv_head  = mctx_cur->get_head();
+        const auto   mem_size = mctx_cur->get_size();
+        const size_t row_size = hparams.n_embd_s() * ggml_element_size(ssm_states_all);
+        // staged through a contiguous copy: copying straight out of the strided view while the tail scan
+        // also reads gdn_out produced corrupted states (buffer reuse in the allocator, most likely)
+        ggml_tensor * src = ggml_cont(ctx0, ggml_view_3d(ctx0, gdn_out, D, n_seqs, n_snap,
+                D * ts, snap_elems * ts, attn_score_elems * ts));
+        ggml_tensor * dst = ggml_view_3d(ctx0, ssm_states_all, D, n_seqs, n_snap,
+                ssm_states_all->nb[1], (size_t) mem_size * row_size,
+                (size_t) kv_head * row_size + (size_t) mem_size * row_size);   // start at group 1
+        ggml_build_forward_expand(gf, ggml_cpy(ctx0, src, dst));
+    }
     const int64_t n_prev = conv_kernel_size - 1;
     r.conv_prev = ggml_view_3d(ctx0, conv_input, n_prev, conv_channels, n_seqs,
             conv_input->nb[1], conv_input->nb[2],

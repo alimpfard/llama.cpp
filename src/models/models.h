@@ -77,7 +77,8 @@ struct llm_build_delta_net_base : public llm_graph_context {
             ggml_tensor *        qkv_mixed,
             int64_t              conv_kernel_size,
             int64_t              conv_channels,
-            int                  il);
+            int                  il,
+            bool                 write_states = true); // false: the caller writes the conv state snapshot(s)
 
     // run delta-net attention and write the new recurrent state(s) back to ssm_states_all
     // s: (head_v_dim, head_v_dim, num_v_heads, n_seqs); returns output: (head_v_dim, num_v_heads, n_seq_tokens, n_seqs)
