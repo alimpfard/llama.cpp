@@ -269,7 +269,18 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
     cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
 
     cb(cur, "h_nextn", -1);
-    res->t_h_nextn = cur;
+    if (kva && cparams.embeddings_nextn && !cparams.embeddings_nextn_masked) {
+        // MTP drafting wants the final hidden state of every token; the approximated tokens get the
+        // normed layer-`split` input as a stand-in (decoding stays exact, the drafter loses some acceptance)
+        ggml_tensor * h_ap = ggml_cont(ctx0, ggml_view_2d(ctx0, inpL, n_embd, n_tokens - 1, inpL->nb[1], 0));
+        h_ap = build_norm(h_ap, model.output_norm, nullptr, LLM_NORM_RMS, -1);
+        ggml_tensor * h_all = ggml_concat(ctx0, h_ap, cur, 1);                    // [n_embd, n_tokens]
+        ggml_set_output(h_all);
+        ggml_build_forward_expand(gf, h_all);
+        res->t_h_nextn = h_all;
+    } else {
+        res->t_h_nextn = cur;
+    }
 
     if (kva) {
         // cur already holds only the last token; the output ids (if any) point at it
@@ -1061,8 +1072,12 @@ void llama_model_qwen35::graph::build_kva_attn(
     cb(Vcur, "kva_Vcur", il);
 
     const auto * mctx_cur = inp->mctx;
-    ggml_tensor * k_idxs = ggml_view_1d(ctx0, inp->get_k_idxs(), n_ap, 0);
-    ggml_tensor * v_idxs = ggml_view_1d(ctx0, inp->get_v_idxs(), n_ap, 0);
+    if (!kva_k_idxs_ap) {
+        kva_k_idxs_ap = ggml_view_1d(ctx0, inp->get_k_idxs(), n_ap, 0);
+        kva_v_idxs_ap = ggml_view_1d(ctx0, inp->get_v_idxs(), n_ap, 0);
+    }
+    ggml_tensor * k_idxs = kva_k_idxs_ap;
+    ggml_tensor * v_idxs = kva_v_idxs_ap;
     ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, Kcur, k_idxs, il));
     ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, Vcur, v_idxs, il));
 }
@@ -1101,8 +1116,12 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn_tail(
     const auto * mctx_cur = inp->mctx;
     ggml_tensor * k_idxs_all = inp->get_k_idxs();
     ggml_tensor * v_idxs_all = inp->get_v_idxs();
-    ggml_tensor * k_idxs = ggml_view_1d(ctx0, k_idxs_all, 1, i_tail * ggml_element_size(k_idxs_all));
-    ggml_tensor * v_idxs = ggml_view_1d(ctx0, v_idxs_all, 1, i_tail * ggml_element_size(v_idxs_all));
+    if (!kva_k_idxs_tail) {
+        kva_k_idxs_tail = ggml_view_1d(ctx0, k_idxs_all, 1, i_tail * ggml_element_size(k_idxs_all));
+        kva_v_idxs_tail = ggml_view_1d(ctx0, v_idxs_all, 1, i_tail * ggml_element_size(v_idxs_all));
+    }
+    ggml_tensor * k_idxs = kva_k_idxs_tail;
+    ggml_tensor * v_idxs = kva_v_idxs_tail;
     ggml_build_forward_expand(gf, Qcur);
     ggml_build_forward_expand(gf, Vcur);
     ggml_build_forward_expand(gf, Kcur);

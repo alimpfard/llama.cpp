@@ -2282,6 +2282,9 @@ struct llama_model_qwen35 : public llama_model_base {
                     ggml_tensor * inp_pos,
                             int * sections);
         struct kva_rs { ggml_tensor * state = nullptr; ggml_tensor * conv_prev = nullptr; };
+        // KV-cache index views shared by all late attention layers (each distinct view counts as a graph input
+        // for the scheduler, and the 30-input split limit is easy to hit with one view per layer)
+        mutable ggml_tensor * kva_k_idxs_ap = nullptr, * kva_v_idxs_ap = nullptr, * kva_k_idxs_tail = nullptr, * kva_v_idxs_tail = nullptr;
         kva_rs build_kva_linear(
              llm_graph_input_rs * inp,
                     ggml_tensor * o,

@@ -412,6 +412,8 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
     static const std::regex pattern_ffn_gate_shexp_weight ("blk\\.\\d*\\.ffn_gate_shexp.weight");
     static const std::regex pattern_ffn_down_shexp_weight ("blk\\.\\d*\\.ffn_down_shexp.weight");
 
+    static const std::regex pattern_kva_head_weight("kva\\.head\\.\\d*\\.weight");
+    static const std::regex pattern_kva_head_bias  ("kva\\.head\\.\\d*\\.bias");
     static const std::regex pattern_output_weight("output\\.weight");
     static const std::regex pattern_output_bias  ("output\\.bias");
 
@@ -451,6 +453,13 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
             const size_t layer_index_start = tensor_name.find("_l", 6);
             GGML_ASSERT(layer_index_start != std::string::npos);
             il = std::stoull(tensor_name.substr(layer_index_start + 2));
+            prefix = "blk." + std::to_string(il) + ".";
+            rotation = get_il_eff(il) % ud->n_devices;
+        } else if (tensor_name.substr(0, 9) == "kva.head.") {
+            // KVA projector head for layer N: split like that layer's own token-mixer input projections
+            const size_t length_prefix = tensor_name.find('.', 9);
+            GGML_ASSERT(length_prefix != std::string::npos);
+            il = std::stoull(tensor_name.substr(9, length_prefix - 9));
             prefix = "blk." + std::to_string(il) + ".";
             rotation = get_il_eff(il) % ud->n_devices;
         } else {
@@ -573,6 +582,14 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
             return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_PARTIAL, "ffn_down_exps.weight");
         }
 
+        // KVA projector heads (the trunk stays mirrored)
+        if (std::regex_match(tensor_name, pattern_kva_head_weight)) {
+            return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_1, "attn_output.weight", "ssm_out.weight");
+        }
+        if (std::regex_match(tensor_name, pattern_kva_head_bias)) {
+            return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_0, "attn_output.weight", "ssm_out.weight");
+        }
+
         // output
         if (std::regex_match(tensor_name, pattern_output_weight)) {
             if (is_dsv4) {
@@ -629,6 +646,17 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
                 }
                 if (std::regex_match(tensor_name, pattern_s_cache)) {
                     return {{n_k_heads * head_v_dim * head_v_dim, head_ratio}};
+                }
+                if (std::regex_match(tensor_name, pattern_kva_head_weight) || std::regex_match(tensor_name, pattern_kva_head_bias)) {
+                    if (hparams.is_recr(il)) {
+                        // [q | k | v (tiled) | a (tiled) | b (tiled)]
+                        GGML_ASSERT(tensor->ne[axis] == 2*key_dim + value_dim + 2*n_v_heads);
+                        return {{key_dim, 2 + head_ratio}, {n_k_heads, 2*head_ratio}};
+                    }
+                    // [k | v]
+                    const int64_t n_embd_gqa = hparams.n_embd_v_gqa(il);
+                    GGML_ASSERT(tensor->ne[axis] == 2*n_embd_gqa);
+                    return {{n_embd_gqa, 2}};
                 }
             }
 
@@ -687,6 +715,10 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
             }
             if (std::regex_match(tensor_name, pattern_s_cache)) {
                 return std::vector<int64_t>(segments.size(), granularity_qkv * head_dim);
+            }
+            if (std::regex_match(tensor_name, pattern_kva_head_weight) || std::regex_match(tensor_name, pattern_kva_head_bias)) {
+                GGML_ASSERT(segments.size() == 2);
+                return {granularity_qkv, granularity_qkv / head_dim};
             }
         } else {
             // regular attention
@@ -752,6 +784,10 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
             if (std::regex_match(tensor_name, pattern_kv_weight) ||
                 std::regex_match(tensor_name, pattern_kv_bias) ||
                 std::regex_match(tensor_name, pattern_kv_cache)) {
+                GGML_ASSERT(segments.size() == 1);
+                return {granularity_kv};
+            }
+            if (std::regex_match(tensor_name, pattern_kva_head_weight) || std::regex_match(tensor_name, pattern_kva_head_bias)) {
                 GGML_ASSERT(segments.size() == 1);
                 return {granularity_kv};
             }

@@ -534,6 +534,13 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
         if (scalar_only && ret.axis >= 0 && ret.axis < GGML_MAX_DIMS) {
             ret = {GGML_BACKEND_SPLIT_AXIS_UNKNOWN, {0}, {1}, 1};
         }
+        if (ret.axis == GGML_BACKEND_SPLIT_AXIS_UNKNOWN) {
+            GGML_LOG_ERROR("%s: unsupported split states for node '%s' (op %s):", __func__, tensor->name, ggml_op_name(tensor->op));
+            for (size_t i = 0; i < src_ss.size(); ++i) {
+                GGML_LOG_ERROR(" src%zu='%s' axis=%d", i, tensor->src[i] ? tensor->src[i]->name : "?", (int) src_ss[i].axis);
+            }
+            GGML_LOG_ERROR("\n");
+        }
         GGML_ASSERT(ret.axis != GGML_BACKEND_SPLIT_AXIS_UNKNOWN);
         return ret;
     };
@@ -2219,6 +2226,13 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                 }
                 n_subgraphs++;
                 i_start = i + 1;
+            }
+            if (i_start != cgraph->n_nodes) {
+                for (int i = std::max(0, cgraph->n_nodes - 4); i < cgraph->n_nodes; i++) {
+                    const ggml_tensor * t = cgraph->nodes[i];
+                    GGML_LOG_ERROR("%s: trailing node %d '%s' op %s view_src '%s' (op %s)\n", __func__, i, t->name, ggml_op_name(t->op),
+                        t->view_src ? t->view_src->name : "-", t->view_src ? ggml_op_name(t->view_src->op) : "-");
+                }
             }
             GGML_ASSERT(i_start == cgraph->n_nodes);
         }
