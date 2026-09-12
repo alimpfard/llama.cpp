@@ -1006,6 +1006,10 @@ extern "C" {
     // TODO: rename to avoid confusion with llama_get_embeddings()
     LLAMA_API void llama_set_embeddings(struct llama_context * ctx, bool embeddings);
 
+    // KVA: enable/disable the late-layer KV approximation for subsequent prompt batches (models with kva.* tensors)
+    LLAMA_API void llama_set_kva(struct llama_context * ctx, bool enable);
+    LLAMA_API bool llama_get_kva(const struct llama_context * ctx);
+
     // Set whether to use causal attention or not
     // If set to true, the model will only attend to the past tokens
     LLAMA_API void llama_set_causal_attn(struct llama_context * ctx, bool causal_attn);

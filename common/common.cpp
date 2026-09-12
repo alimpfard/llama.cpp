@@ -1749,6 +1749,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.swa_full          = params.swa_full;
     cparams.kv_unified        = params.kv_unified;
     if (params.kva >= 0) { setenv("LLAMA_KVA", params.kva ? "1" : "0", 1); }
+    if (params.kva_tail_exact >= 0) { setenv("LLAMA_KVA_TAIL_EXACT", std::to_string(params.kva_tail_exact).c_str(), 1); }
 
     cparams.type_k = params.cache_type_k;
     cparams.type_v = params.cache_type_v;

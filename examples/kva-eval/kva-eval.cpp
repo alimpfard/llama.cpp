@@ -22,7 +22,7 @@
 int main(int argc, char ** argv) {
     common_params params;
     params.n_ctx = 4096;
-    int prompt_len = 1536, cont_len = 512, n_seqs = 24;
+    int prompt_len = 1536, cont_len = 512, n_seqs = 24, tail_exact = 0;
     std::string dump_path;
     // pull our own args out before common parsing
     std::vector<char *> args;
@@ -32,6 +32,7 @@ int main(int argc, char ** argv) {
         if (a == "--cont-len"   && i + 1 < argc) { cont_len   = atoi(argv[++i]); continue; }
         if (a == "--n-seqs"     && i + 1 < argc) { n_seqs     = atoi(argv[++i]); continue; }
         if (a == "--dump"       && i + 1 < argc) { dump_path  = argv[++i];       continue; }
+        if (a == "--eval-tail-exact" && i + 1 < argc) { tail_exact = atoi(argv[++i]); continue; }
         args.push_back(argv[i]);
     }
     if (!common_params_parse((int) args.size(), args.data(), params, LLAMA_EXAMPLE_PERPLEXITY)) {
@@ -60,12 +61,16 @@ int main(int argc, char ** argv) {
         // 1. prompt, no logits
         llama_batch b = llama_batch_init(params.n_batch, 0, 1);
         // the last prompt token is fed with the continuation (it needs logits); the KVA path covers the rest
+        const bool kva_ctx = llama_get_kva(ctx);
         for (int i = 0; i < prompt_len - 1; i += params.n_batch) {
             const int n = std::min(params.n_batch, prompt_len - 1 - i);
+            // optionally run the last `tail_exact` prompt tokens through the exact path
+            llama_set_kva(ctx, kva_ctx && !(tail_exact > 0 && i + n > prompt_len - 1 - tail_exact));
             common_batch_clear(b);
             for (int j = 0; j < n; ++j) common_batch_add(b, all[off + i + j], i + j, {0}, false);
             if (llama_decode(ctx, b) != 0) { LOG_ERR("decode failed (prompt)\n"); return 1; }
         }
+        llama_set_kva(ctx, kva_ctx);
         // 2. continuation with logits; token at prompt_len-1 predicts the first continuation token
         common_batch_clear(b);
         common_batch_add(b, all[off + prompt_len - 1], prompt_len - 1, {0}, true);

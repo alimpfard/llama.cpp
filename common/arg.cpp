@@ -1728,11 +1728,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--kva"},
         {"--no-kva"},
-        "skip the late decoder layers during prefill using the model's KVA projector (default: disabled)",
+        "skip the late decoder layers during prefill using the model's KVA projector (default: enabled for models that carry one)",
         [](common_params & params, bool value) {
             params.kva = value ? 1 : 0;
         }
     ).set_env("LLAMA_ARG_KVA"));
+    add_opt(common_arg(
+        {"--kva-tail-exact"}, "N",
+        "KVA: run the last N prompt tokens through the exact path (default: 4096; 0 = approximate everything)",
+        [](common_params & params, int value) {
+            params.kva_tail_exact = value;
+        }
+    ).set_env("LLAMA_ARG_KVA_TAIL_EXACT"));
     add_opt(common_arg(
         {"--cache-idle-slots"},
         {"--no-cache-idle-slots"},

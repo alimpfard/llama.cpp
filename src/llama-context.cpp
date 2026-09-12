@@ -274,6 +274,7 @@ llama_context::llama_context(
     // KVA prefill (models carrying kva.* tensors): on by default, LLAMA_KVA=0 disables; kept out of
     // llama_context_params so the library stays ABI-compatible with upstream builds
     { const char * e = getenv("LLAMA_KVA"); cparams.kva_prefill = e ? atoi(e) != 0 : true; }
+    { const char * e = getenv("LLAMA_KVA_TAIL_EXACT"); cparams.kva_tail_exact = e ? (uint32_t) std::max(0, atoi(e)) : 4096; }
 
     // initialized later
     cparams.pipeline_parallel = false;
@@ -1161,6 +1162,14 @@ void llama_context::set_abort_callback(bool (*abort_callback)(void * data), void
     }
 }
 
+void llama_context::set_kva(bool value) {
+    cparams.kva_prefill = value;
+}
+
+bool llama_context::get_kva() const {
+    return cparams.kva_prefill;
+}
+
 void llama_context::set_embeddings(bool value) {
     LLAMA_LOG_DEBUG("%s: value = %d\n", __func__, value);
 
@@ -1823,6 +1832,11 @@ int llama_context::decode(const llama_batch & batch_inp) {
         }
 
         ggml_status status;
+
+        // KVA: the most recent prompt tokens matter most for what follows; in the batch that carries the prompt's
+        // output token, run the ubatches covering the last kva_tail_exact tokens through the exact path
+        cparams.kva_ubatch = !(n_outputs_all > 0 && cparams.kva_tail_exact > 0 &&
+                n_tokens_prev + (int64_t) ubatch.n_tokens > (int64_t) n_tokens_all - (int64_t) cparams.kva_tail_exact);
 
         const auto * res = process_ubatch(ubatch, ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status);
 
@@ -3800,6 +3814,14 @@ int32_t llama_n_threads_batch(llama_context * ctx) {
 
 void llama_set_abort_callback(llama_context * ctx, bool (*abort_callback)(void * data), void * abort_callback_data) {
     ctx->set_abort_callback(abort_callback, abort_callback_data);
+}
+
+void llama_set_kva(llama_context * ctx, bool enable) {
+    ctx->set_kva(enable);
+}
+
+bool llama_get_kva(const llama_context * ctx) {
+    return ctx->get_kva();
 }
 
 void llama_set_embeddings(llama_context * ctx, bool embeddings) {

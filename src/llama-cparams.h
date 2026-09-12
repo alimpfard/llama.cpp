@@ -53,6 +53,8 @@ struct llama_cparams {
     bool op_offload;
     bool kv_unified;
     bool kva_prefill; // approximate the late layers during prefill with the KVA projector (if the model has one)
+    uint32_t kva_tail_exact = 4096; // in the batch that carries the prompt's output token, run the last N tokens exactly
+    bool kva_ubatch = true;         // per-ubatch decision made in llama_context::decode (false = exact for this ubatch)
     bool pipeline_parallel;
 
     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer

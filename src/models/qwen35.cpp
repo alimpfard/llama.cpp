@@ -733,7 +733,7 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
 // ============================================================================================
 
 bool llama_model_qwen35::graph::kva_active(const llama_model_qwen35 & qm) const {
-    if (!cparams.kva_prefill || !qm.has_kva() || hparams.kva_split == 0) {
+    if (!cparams.kva_prefill || !cparams.kva_ubatch || !qm.has_kva() || hparams.kva_split == 0) {
         return false;
     }
     if (n_tokens < 2 || ubatch.n_seqs != 1) {

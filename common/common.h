@@ -572,6 +572,7 @@ struct common_params {
     bool swa_full          = false; // use full-size SWA cache (https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055)
     bool kv_unified        = false; // enable unified KV cache
     int  kva               = -1;    // KVA prefill approximation (models carrying kva.* tensors): -1 = leave to LLAMA_KVA env (default on), --kva/--no-kva override
+    int  kva_tail_exact    = -1;    // run the last N prompt tokens exactly (-1 = LLAMA_KVA_TAIL_EXACT env, default 4096)
 
     bool input_prefix_bos  = false; // prefix BOS to user inputs, preceding input_prefix
     bool verbose_prompt    = false; // print prompt tokens before generation
