@@ -1068,6 +1068,9 @@ void llama_model_qwen35::graph::build_kva_attn(
             n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale,
             ext_factor, attn_factor, beta_fast, beta_slow);
     Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_ap);
+    // quantized KV caches store Hadamard-rotated K/V (see build_attn); the rows written here must match
+    if (inp->self_k_rot) { Kcur = llama_mul_mat_hadamard(ctx0, Kcur, inp->self_k_rot); }
+    if (inp->self_v_rot) { Vcur = llama_mul_mat_hadamard(ctx0, Vcur, inp->self_v_rot); }
     cb(Kcur, "kva_Kcur", il);
     cb(Vcur, "kva_Vcur", il);
 
@@ -1122,6 +1125,11 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn_tail(
     }
     ggml_tensor * k_idxs = kva_k_idxs_tail;
     ggml_tensor * v_idxs = kva_v_idxs_tail;
+    if (inp->self_k_rot) {
+        Qcur = llama_mul_mat_hadamard(ctx0, Qcur, inp->self_k_rot);
+        Kcur = llama_mul_mat_hadamard(ctx0, Kcur, inp->self_k_rot);
+    }
+    if (inp->self_v_rot) { Vcur = llama_mul_mat_hadamard(ctx0, Vcur, inp->self_v_rot); }
     ggml_build_forward_expand(gf, Qcur);
     ggml_build_forward_expand(gf, Vcur);
     ggml_build_forward_expand(gf, Kcur);
@@ -1134,6 +1142,7 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn_tail(
     ggml_tensor * v = mctx_cur->get_v(ctx0, il);
     const float kq_scale = hparams.f_attention_scale == 0.0f ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
     ggml_tensor * out = build_attn_mha(Qcur, k, v, nullptr, mask_tail, nullptr, nullptr, kq_scale, il);
+    if (inp->self_v_rot) { out = llama_mul_mat_hadamard(ctx0, out, inp->self_v_rot); }
     cb(out, "kva_tail_attn", il);
     out = ggml_mul(ctx0, out, ggml_sigmoid(ctx0, gate));
     out = build_lora_mm(model.layers[il].wo, out, model.layers[il].wo_s);
