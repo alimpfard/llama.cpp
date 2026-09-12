@@ -170,6 +170,16 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
             kva_heads[il].w = create_tensor(tn(LLM_TENSOR_KVA_HEAD, "weight", il), { d, out }, kf);
             kva_heads[il].b = create_tensor(tn(LLM_TENSOR_KVA_HEAD, "bias",   il), { out }, kf);
         }
+        // optional heads: residual inputs of selected late layers and the final normed hidden state (drafter features)
+        kva_res.resize(n_layer);
+        for (int il = (int) hparams.kva_split; il < n_layer; ++il) {
+            kva_res[il].w = create_tensor(tn(LLM_TENSOR_KVA_RES, "weight", il), { d, n_embd }, kf | TENSOR_NOT_REQUIRED);
+            kva_res[il].b = create_tensor(tn(LLM_TENSOR_KVA_RES, "bias",   il), { n_embd },    kf | TENSOR_NOT_REQUIRED);
+        }
+        kva_final.w = create_tensor(tn(LLM_TENSOR_KVA_FINAL, "weight"), { d, n_embd }, kf | TENSOR_NOT_REQUIRED);
+        kva_final.b = create_tensor(tn(LLM_TENSOR_KVA_FINAL, "bias"),   { n_embd },    kf | TENSOR_NOT_REQUIRED);
+        {
+        }
     }
 }
 
@@ -260,6 +270,7 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
         inpL = cur;
     }
     if (kva) {
+        res->kva_used = true;
         // approximate the late layers' cache state for all tokens but the last, run the last exactly
         cur = build_kva(qm, inp, inp_kva_mask, inpL, inp_pos, sections);
     } else {
@@ -272,8 +283,14 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
     if (kva && cparams.embeddings_nextn && !cparams.embeddings_nextn_masked) {
         // MTP drafting wants the final hidden state of every token; the approximated tokens get the
         // normed layer-`split` input as a stand-in (decoding stays exact, the drafter loses some acceptance)
-        ggml_tensor * h_ap = ggml_cont(ctx0, ggml_view_2d(ctx0, inpL, n_embd, n_tokens - 1, inpL->nb[1], 0));
-        h_ap = build_norm(h_ap, model.output_norm, nullptr, LLM_NORM_RMS, -1);
+        ggml_tensor * h_ap;
+        if (qm.kva_final.w) {                                                      // predicted final normed hidden state
+            h_ap = ggml_add(ctx0, build_lora_mm(qm.kva_final.w, kva_trunk), qm.kva_final.b);
+            cb(h_ap, "kva_final", -1);
+        } else {
+            h_ap = ggml_cont(ctx0, ggml_view_2d(ctx0, inpL, n_embd, n_tokens - 1, inpL->nb[1], 0));
+            h_ap = build_norm(h_ap, model.output_norm, nullptr, LLM_NORM_RMS, -1);
+        }
         ggml_tensor * h_all = ggml_concat(ctx0, h_ap, cur, 1);                    // [n_embd, n_tokens]
         ggml_set_output(h_all);
         ggml_build_forward_expand(gf, h_all);
@@ -817,6 +834,7 @@ ggml_tensor * llama_model_qwen35::graph::build_kva(
     }
     x = build_norm(x, qm.kva_out_norm, nullptr, LLM_NORM_RMS, split);
     cb(x, "kva_trunk", split);
+    kva_trunk = x;
 
     // ---- proposed mixer inputs -> cache state for the approximated tokens
     std::vector<kva_rs> rs(n_layer);
@@ -840,7 +858,12 @@ ggml_tensor * llama_model_qwen35::graph::build_kva(
         // (e.g. a DFlash2 drafter) get the layer-`split` input as a stand-in for the approximated tokens
         const bool want_inp = il < (int) cparams.embeddings_layer_inp.size() && cparams.embeddings_layer_inp[il];
         if (want_inp) {
-            ggml_tensor * t = ggml_concat(ctx0, ggml_cont(ctx0, h_ap), cur, 1);       // [n_embd, n_tokens]
+            ggml_tensor * ap = ggml_cont(ctx0, h_ap);                                  // default stand-in: layer-split input
+            if (qm.kva_res[il].w) {                                                    // predicted residual input of layer il
+                ap = ggml_add(ctx0, build_lora_mm(qm.kva_res[il].w, kva_trunk), qm.kva_res[il].b);
+                cb(ap, "kva_res", il);
+            }
+            ggml_tensor * t = ggml_concat(ctx0, ap, cur, 1);                          // [n_embd, n_tokens]
             ggml_set_output(t);
             ggml_build_forward_expand(gf, t);
             res->t_layer_inp[il] = t;

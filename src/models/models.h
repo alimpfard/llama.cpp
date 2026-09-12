@@ -2254,6 +2254,8 @@ struct llama_model_qwen35 : public llama_model_base {
     ggml_tensor * kva_out_norm = nullptr;
     std::vector<kva_block> kva_blocks;
     std::vector<kva_head>  kva_heads; // indexed by layer, valid for il >= kva_split
+    std::vector<kva_head>  kva_res;   // optional: residual input of layer il (drafter features), indexed by layer
+    kva_head               kva_final; // optional: final normed hidden state (MTP features)
     bool has_kva() const { return kva_inp != nullptr && kva_out_norm != nullptr; }
 
     struct graph : public llm_build_delta_net_base {
@@ -2285,6 +2287,7 @@ struct llama_model_qwen35 : public llama_model_base {
         // KV-cache index views shared by all late attention layers (each distinct view counts as a graph input
         // for the scheduler, and the 30-input split limit is easy to hit with one view per layer)
         mutable ggml_tensor * kva_k_idxs_ap = nullptr, * kva_v_idxs_ap = nullptr, * kva_k_idxs_tail = nullptr, * kva_v_idxs_tail = nullptr;
+        mutable ggml_tensor * kva_trunk = nullptr;   // projector trunk output for the approximated tokens
         kva_rs build_kva_linear(
              llm_graph_input_rs * inp,
                     ggml_tensor * o,

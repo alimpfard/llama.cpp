@@ -926,6 +926,8 @@ public:
 
     void add_fused_node(llm_graph_fused_node result);
 
+    bool kva_used = false; // set by the qwen35 graph when the ubatch went through the KVA path
+
     const std::vector<llm_graph_fused_node> & get_fused_nodes() const { return fused_nodes; }
 
     void set_params(const llm_graph_params & params);

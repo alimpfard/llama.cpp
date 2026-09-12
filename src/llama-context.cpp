@@ -1811,6 +1811,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
     int64_t n_outputs_prev = 0;
     int64_t n_tokens_prev  = 0;
+    int64_t n_kva_tokens   = 0;   // tokens that went through the KVA (approximated) path in this batch
 
     do {
         const auto & ubatch = mctx->get_ubatch();
@@ -1833,12 +1834,18 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
         ggml_status status;
 
-        // KVA: the most recent prompt tokens matter most for what follows; in the batch that carries the prompt's
-        // output token, run the ubatches covering the last kva_tail_exact tokens through the exact path
-        cparams.kva_ubatch = !(n_outputs_all > 0 && cparams.kva_tail_exact > 0 &&
+        // KVA: the most recent prompt tokens matter most for what follows, so the ubatches covering the last
+        // kva_tail_exact tokens of a prompt's final chunk run through the exact path. The final chunk is the one
+        // that carries an output token or, when the caller requests no logits during prompt processing (servers
+        // with speculative decoding do that), the one shorter than n_batch: servers fill the earlier chunks fully.
+        const bool final_chunk = n_outputs_all > 0 || n_tokens_all < (int64_t) cparams.n_batch;
+        cparams.kva_ubatch = !(final_chunk && cparams.kva_tail_exact > 0 &&
                 n_tokens_prev + (int64_t) ubatch.n_tokens > (int64_t) n_tokens_all - (int64_t) cparams.kva_tail_exact);
 
         const auto * res = process_ubatch(ubatch, ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status);
+        if (res && res->kva_used) {
+            n_kva_tokens += ubatch.n_tokens;
+        }
 
         if (!res) {
             // the last ubatch failed or was aborted -> remove all positions of that ubatch from the memory module
@@ -2042,6 +2049,11 @@ int llama_context::decode(const llama_batch & batch_inp) {
                 output_ids[out_ids[i]] = i;
             }
         }
+    }
+
+    if (n_kva_tokens > 0) {
+        LLAMA_LOG_WARN("%s: kva: %" PRId64 " of %d prompt tokens approximated (last %u exact when the batch carries an output)\n",
+                __func__, n_kva_tokens, n_tokens_all, cparams.kva_tail_exact);
     }
 
     // wait for the computation to finish (automatically done when obtaining the model output)
